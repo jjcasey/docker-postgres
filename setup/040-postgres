@@ -1,0 +1,39 @@
+#!/bin/bash
+
+set -e
+set -x
+
+for a in passwd group shadow ; do
+	cat /tmp/identity/$a >> /etc/$a
+done
+
+mv /usr/sbin/policy-rc.d.disabled /usr/sbin/policy-rc.d
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends install \
+	gosu \
+	postgresql-common \
+	xz-utils
+sed -ri 's/#(create_main_cluster) .*$/\1 = false/' /etc/postgresql-common/createcluster.conf
+DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends install \
+	postgresql \
+	postgresql-client
+PG_MAJOR=$(dpkg-query --showformat='${Depends}' --show postgresql | cut -d '-' -f 2)
+
+dpkg-divert --add --rename --divert "/usr/share/postgresql/postgresql.conf.sample.dpkg" "/usr/share/postgresql/$PG_MAJOR/postgresql.conf.sample"
+cp -v /usr/share/postgresql/postgresql.conf.sample.dpkg /usr/share/postgresql/postgresql.conf.sample
+ln -sv ../postgresql.conf.sample "/usr/share/postgresql/$PG_MAJOR/"
+sed -ri "s!^#?(listen_addresses)\s*=\s*\S+.*!\1 = '*'!" /usr/share/postgresql/postgresql.conf.sample
+grep -F "listen_addresses = '*'" /usr/share/postgresql/postgresql.conf.sample
+
+cat > /usr/local/preinit/99-postgres-path-env <<-EOF
+#! /bin/bash
+echo PATH=\$PATH:$(dirname $(dpkg -L postgresql-$PG_MAJOR | grep bin/postgres)) >> /var/lib/entrypoint/env
+EOF
+chmod a+x /usr/local/preinit/99-postgres-path-env
+
+apt-get -y -u dist-upgrade
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+/usr/local/bin/docker-wipelogs
+
+mv /usr/sbin/policy-rc.d /usr/sbin/policy-rc.d.disabled
